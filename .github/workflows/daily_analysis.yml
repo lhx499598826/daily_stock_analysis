@@ -16,10 +16,10 @@ on:
         default: false
         type: boolean
 
-# 并发控制：新触发会取消同分支旧任务，避免卡住后后续定时任务不触发
+# 并发控制：保留已在运行的任务，避免后一次触发把前一次报告顶掉
 concurrency:
   group: stock-analysis-${{ github.repository }}-${{ github.workflow }}-${{ github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   analyze:
