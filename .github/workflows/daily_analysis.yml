@@ -26,8 +26,32 @@ jobs:
     runs-on: ubuntu-latest
     # 添加超时限制，防止任务卡死
     timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
     
     steps:
+      - name: 拒绝重复触发
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          current_run_created_at=$(gh api repos/$REPO/actions/runs/$RUN_ID --jq '.created_at')
+          other_in_progress_count=$(gh api repos/$REPO/actions/runs --paginate -f per_page=100 --jq             '[.workflow_runs[]
+              | select(.id != ('"$RUN_ID"'|tonumber))
+              | select(.name == '"$WORKFLOW_NAME"')
+              | select(.head_branch == '"$REF_NAME"')
+              | select((.status == "in_progress") or (.status == "queued") or (.status == "waiting") or (.status == "requested") or (.status == "pending"))
+              | select(.created_at < '"$current_run_created_at"')
+            ] | length')
+          if [ "$other_in_progress_count" -gt 0 ]; then
+            echo "检测到已有更早的同工作流运行中，本次触发将跳过。"
+            exit 0
+          fi
       - name: 随机延迟（避免固定时间访问）
         run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
       
