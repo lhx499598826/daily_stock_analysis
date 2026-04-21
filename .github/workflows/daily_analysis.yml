@@ -98,7 +98,7 @@ jobs:
     if: ${{ needs.precheck.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     # 添加超时限制，防止任务卡死
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       actions: read
       contents: read
@@ -125,6 +125,41 @@ jobs:
         run: |
           mkdir -p data logs reports
       
+      - name: 执行前诊断信息
+        env:
+          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600519' }}
+          REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
+          INTEL_MAX_SEARCHES: ${{ vars.INTEL_MAX_SEARCHES || secrets.INTEL_MAX_SEARCHES || '2' }}
+          ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
+          MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
+          MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
+          SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
+        run: |
+          echo "=========================================="
+          echo "🩺 执行前诊断信息"
+          echo "=========================================="
+          echo "UTC: $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "Asia/Shanghai: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          echo "workflow_run_id: ${{ github.run_id }}"
+          echo "workflow_run_number: ${{ github.run_number }}"
+          echo "event_name: ${{ github.event_name }}"
+          echo "ref_name: ${{ github.ref_name }}"
+          echo "stock_list: $STOCK_LIST"
+          stock_count=$(python3 - <<'PY'
+          import os, re
+          items = [x for x in re.split(r'[,，;；\s]+', os.environ.get('STOCK_LIST', '').strip()) if x]
+          print(len(items))
+          PY
+          )
+          echo "stock_count: $stock_count"
+          echo "report_type: $REPORT_TYPE"
+          echo "intel_max_searches: $INTEL_MAX_SEARCHES"
+          echo "analysis_delay: $ANALYSIS_DELAY"
+          echo "max_workers: $MAX_WORKERS"
+          echo "market_review_enabled: $MARKET_REVIEW_ENABLED"
+          echo "single_stock_notify: $SINGLE_STOCK_NOTIFY"
+          echo "=========================================="
+
       - name: 执行个股分析
         env:
           # ==========================================
@@ -298,6 +333,8 @@ jobs:
           echo "=========================================="
           echo "📊 分析完成"
           echo "=========================================="
+          echo "结束时间(UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo ""
           if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
             echo "生成的报告:"
             ls -la reports/
@@ -305,9 +342,12 @@ jobs:
             echo "⚠️ 未生成报告文件"
           fi
           echo ""
-          if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then
-            echo "📜 最近日志（最后 30 行）:"
-            tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
+          echo "logs 目录概览:"
+          ls -lah logs/ 2>/dev/null || echo "无 logs 目录"
+          echo ""
+          if ls logs/stock_analysis_*.log >/dev/null 2>&1; then
+            echo "📜 最近日志（最后 80 行）:"
+            tail -80 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
           fi
 
   skipped:
