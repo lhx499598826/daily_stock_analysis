@@ -22,16 +22,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  analyze:
+  precheck:
     runs-on: ubuntu-latest
-    # 添加超时限制，防止任务卡死
-    timeout-minutes: 30
     permissions:
       actions: read
       contents: read
-    
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+      reason: ${{ steps.decide.outputs.reason }}
     steps:
-      - name: 拒绝重复触发
+      - name: 判断是否已有更早运行中的同工作流
+        id: decide
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -40,18 +41,60 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          current_run_created_at=$(gh api repos/$REPO/actions/runs/$RUN_ID --jq '.created_at')
-          other_in_progress_count=$(gh api repos/$REPO/actions/runs --paginate -f per_page=100 --jq             '[.workflow_runs[]
-              | select(.id != ('"$RUN_ID"'|tonumber))
-              | select(.name == '"$WORKFLOW_NAME"')
-              | select(.head_branch == '"$REF_NAME"')
-              | select((.status == "in_progress") or (.status == "queued") or (.status == "waiting") or (.status == "requested") or (.status == "pending"))
-              | select(.created_at < '"$current_run_created_at"')
-            ] | length')
-          if [ "$other_in_progress_count" -gt 0 ]; then
-            echo "检测到已有更早的同工作流运行中，本次触发将跳过。"
-            exit 0
+          response=$(gh api "repos/$REPO/actions/runs?per_page=100")
+          should_run=$(RESPONSE="$response" python3 - <<'PY'
+          import json, os
+          run_id = int(os.environ['RUN_ID'])
+          workflow_name = os.environ['WORKFLOW_NAME']
+          ref_name = os.environ['REF_NAME']
+          data = json.loads(os.environ['RESPONSE'])
+          current = None
+          runs = data.get('workflow_runs') or []
+          for r in runs:
+              if r.get('id') == run_id:
+                  current = r
+                  break
+          if current is None:
+              print('true')
+              raise SystemExit
+          current_created_at = current.get('created_at') or ''
+          active = {'in_progress', 'queued', 'waiting', 'requested', 'pending'}
+          for r in runs:
+              if r.get('id') == run_id:
+                  continue
+              if r.get('name') != workflow_name:
+                  continue
+              if r.get('head_branch') != ref_name:
+                  continue
+              if r.get('status') not in active:
+                  continue
+              if (r.get('created_at') or '') < current_created_at:
+                  print('false')
+                  raise SystemExit
+          print('true')
+          PY
+          )
+          if [ "$should_run" = "true" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "reason=no_older_active_run" >> "$GITHUB_OUTPUT"
+            echo "未检测到更早的运行中任务，继续执行。"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "reason=older_active_run_exists" >> "$GITHUB_OUTPUT"
+            echo "检测到已有更早的同工作流运行中，本次 run 将标记为跳过。"
           fi
+
+  analyze:
+    needs: precheck
+    if: ${{ needs.precheck.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    # 添加超时限制，防止任务卡死
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    
+    steps:
       - name: 随机延迟（避免固定时间访问）
         run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
       
@@ -257,3 +300,13 @@ jobs:
             echo "📜 最近日志（最后 30 行）:"
             tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
           fi
+
+  skipped:
+    needs: precheck
+    if: ${{ needs.precheck.outputs.should_run != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 标记为跳过
+        run: |
+          echo "跳过原因: ${{ needs.precheck.outputs.reason }}"
+          echo "检测到已有更早的同工作流运行中，本次未执行分析。"
